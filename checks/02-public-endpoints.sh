@@ -1,27 +1,7 @@
 # Control 2: find every internet-facing resource. WAF coverage of these is checked in 05-waf.sh.
 C2=C2-PUBLIC
+register_component 2 $C2 "2. Review every public endpoint"
 WEB_PORTS_RE='^(80|443)$'
-
-# Shared inventory (also used by 05-waf.sh), cached per Region.
-load_balancers()  { cached_json "$1" "$2" elbv2 elbv2 describe-load-balancers --region "$2"; }
-classic_lbs()     { cached_json "$1" "$2" elb elb describe-load-balancers --region "$2"; }
-rest_apis()       { cached_json "$1" "$2" rest-apis apigateway get-rest-apis --region "$2"; }
-http_apis()       { cached_json "$1" "$2" http-apis apigatewayv2 get-apis --region "$2"; }
-distributions()   { cached_json "$1" "$G" cloudfront cloudfront list-distributions --region "$GLOBAL_REGION"; }
-
-function_url_rows() { # control region -> "function SEP url SEP authtype" lines, cached
-  local file="$OUT_DIR/cache/$2-function-urls.txt" j u fn
-  if [ ! -f "$file" ]; then
-    mkdir -p "$OUT_DIR/cache"; : > "$file"
-    j=$(lambda_functions "$1" "$2") || return
-    while read -r fn; do
-      [ -z "$fn" ] && continue
-      u=$(aws_json "$1" "$2" lambda list-function-url-configs --function-name "$fn" --region "$2") || continue
-      jq -r --arg fn "$fn" '.FunctionUrlConfigs[] | [$fn, .FunctionUrl, .AuthType] | join("\u001f")' <<<"$u" >> "$file"
-    done < <(jq -r '.Functions[].FunctionName' <<<"$j")
-  fi
-  cat "$file"
-}
 
 c2_s3() {
   local j rc b br p a grants off checked=0 public=0
@@ -76,7 +56,7 @@ c2_compute() { # public instance IPs, open security groups, public RDS
       emit $C2 WARN "$R" "$id${name:+ ($name)}" "public IP $ip; justify or move behind a load balancer"
     done < <(rows '.Reservations[].Instances[] | select(.State.Name != "terminated" and .PublicIpAddress) | [.InstanceId, .PublicIpAddress, ([.Tags[]? | select(.Key == "Name") | .Value][0] // "")]' <<<"$j")
   fi
-  if j=$(aws_json $C2 "$R" ec2 describe-security-groups --region "$R"); then
+  if j=$(security_groups $C2 "$R"); then
     while IFS="$SEP" read -r gid gname proto from to; do
       [ -z "$gid" ] && continue
       ports="all traffic"; status=FAIL

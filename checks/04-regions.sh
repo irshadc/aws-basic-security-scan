@@ -1,5 +1,6 @@
 # Control 4: find unused Regions and check whether Organizations policies block them.
 C4=C4-REGIONS
+register_component 4 $C4 "4. Block unused Regions"
 REGION_CONDITION_KEY='aws:RequestedRegion'
 
 c4_policies_with_region_key() { # <list-policies JSON> -> names of customer policies containing $REGION_CONDITION_KEY, or "none"

@@ -1,5 +1,6 @@
 # Control 1: remove long-lived access keys, plus root, IAM user, password policy and Access Analyzer hygiene.
 C1=C1-KEYS
+register_component 1 $C1 "1. Remove long-lived access keys"
 PASSWORD_MIN_LENGTH=14     # CIS / Security Hub IAM.15
 PASSWORD_MIN_REUSE=24      # CIS / Security Hub IAM.16
 EXTERNAL_ANALYZER_TYPES='ACCOUNT|ORGANIZATION'
@@ -63,7 +64,7 @@ c1_region() { # IAM Identity Center instance, Access Analyzer (SRA-ACCESSANALYZE
       emit $C1 PASS "$R" identity-center "IAM Identity Center instance $arn ($status)"
     done < <(rows '.Instances[] | [.InstanceArn, (.Status // "")]' <<<"$j")
   fi
-  j=$(aws_json $C1 "$R" accessanalyzer list-analyzers --region "$R") || return
+  j=$(access_analyzers $C1 "$R") || return
   ext=$(jq -r --arg t "^($EXTERNAL_ANALYZER_TYPES)$" '[.analyzers[] | select(.status == "ACTIVE" and (.type | test($t))) | .name] | join(",")' <<<"$j")
   pass_or_fail "$([ -n "$ext" ] && echo true)" $C1 "$R" access-analyzer "external access analyzer active: $ext" "no active external access analyzer; create a free one: aws accessanalyzer create-analyzer --analyzer-name external --type ACCOUNT --region $R (SRA-ACCESSANALYZER-01)"
   jq -r --arg t "^($UNUSED_ANALYZER_TYPES)$" '.analyzers[] | select(.status == "ACTIVE" and (.type | test($t))) | .name' <<<"$j" \

@@ -1,5 +1,7 @@
-# Control 8 (phase 2): CloudTrail, AWS Config, VPC flow logs, Route 53 Resolver query logs, EBS default encryption.
+# Control 8 (phase 2): CloudTrail (with its log bucket and S3 data events), AWS Config, VPC flow logs,
+# Route 53 Resolver query logs, EBS default encryption.
 C8=C8-LOGGING
+register_component 8 $C8 "8. Logging and encryption baseline"
 AI_CONFIG_TYPES="AWS::Bedrock::DataSource AWS::BedrockAgentCore::BrowserCustom AWS::BedrockAgentCore::CodeInterpreterCustom AWS::BedrockAgentCore::Gateway AWS::BedrockAgentCore::Memory AWS::BedrockAgentCore::Runtime AWS::SageMaker::FeatureGroup AWS::SageMaker::InferenceExperiment AWS::SageMaker::Model AWS::SageMaker::ModelExplainabilityJobDefinition AWS::SageMaker::ModelQualityJobDefinition AWS::SageMaker::MonitoringSchedule AWS::SageMaker::NotebookInstance"
 
 c8_trail_settings() { # <trail JSON> <label>: static settings (SRA-CLOUDTRAIL-02/03/04/05/06)
@@ -25,6 +27,28 @@ c8_trail_runtime() { # <trail ARN> <home region> <label>: logging state and even
     $C8 "$G" "$label/management-events" "all management events (read and write)" "not logging all read and write management events (SRA-CLOUDTRAIL-15)"
   pass_or_fail "$(jq 'any(.AdvancedEventSelectors[]?; any(.FieldSelectors[]; .Field == "resources.type" and any(.Equals[]?; startswith("AWS::Bedrock"))))' <<<"$s")" \
     $C8 "$G" "$label/bedrock-data-events" "Bedrock or AgentCore data events selected" "no Bedrock or AgentCore data events; model invocations are not audited (SRA-CLOUDTRAIL-14)" WARN
+  pass_or_fail "$(jq 'any(.EventSelectors[]?; any(.DataResources[]?; .Type == "AWS::S3::Object"))
+      or any(.AdvancedEventSelectors[]?; any(.FieldSelectors[]; .Field == "resources.type" and any(.Equals[]?; . == "AWS::S3::Object")))' <<<"$s")" \
+    $C8 "$G" "$label/s3-data-events" "S3 object data events selected" "no S3 data events; reads and deletes of sensitive objects are not audited. Select at least the buckets that hold sensitive data (ASSB WKLD.07)" WARN
+}
+
+c8_trail_bucket() { # <trail JSON> <label>: the log bucket is private and keeps old versions (ASSB ACCT.07)
+  local t="$1" label="$2" b br j rc
+  b=$(jq -r '.S3BucketName // ""' <<<"$t")
+  [ -z "$b" ] && return
+  j=$(EXPECT_ERR='AccessDenied|NoSuchBucket|AllAccessDisabled' aws_json $C8 "$G" s3api get-bucket-location --bucket "$b" --region "$GLOBAL_REGION"); rc=$?
+  if [ "$rc" -eq 2 ]; then
+    emit $C8 INFO "$G" "$label/bucket" "log bucket $b is not readable from this account (often a central log-archive account); check its protection there (ASSB ACCT.07)"
+    return
+  fi
+  [ "$rc" -ne 0 ] && return
+  br=$(jq -r '.LocationConstraint // "us-east-1" | if . == "EU" then "eu-west-1" else . end' <<<"$j")
+  j=$(EXPECT_ERR='NoSuchPublicAccessBlockConfiguration' aws_json $C8 "$br" s3api get-public-access-block --bucket "$b" --region "$br"); rc=$?
+  [ "$rc" -ne 1 ] && pass_or_fail "$([ "$rc" -eq 0 ] && jq '[.PublicAccessBlockConfiguration[]] | all' <<<"$j")" $C8 "$G" "$label/bucket-public-access" \
+    "log bucket $b blocks all public access" "log bucket $b does not turn on all four bucket-level Block Public Access settings (ASSB ACCT.07)" WARN
+  j=$(aws_json $C8 "$br" s3api get-bucket-versioning --bucket "$b" --region "$br") || return
+  pass_or_fail "$(jq '.Status == "Enabled"' <<<"$j")" $C8 "$G" "$label/bucket-versioning" "log bucket $b has versioning on" \
+    "log bucket $b has versioning off, so deleted or overwritten logs cannot be recovered; turn it on and consider S3 Object Lock (ASSB ACCT.07)" WARN
 }
 
 c8_global() {
@@ -38,6 +62,7 @@ c8_global() {
     [ "$(jq '.IsOrganizationTrail' <<<"$t")" = true ] && label="$label (organization)"
     c8_trail_settings "$t" "$label"
     c8_trail_runtime "$arn" "$home" "$label"
+    c8_trail_bucket "$t" "$label"
   done < <(rows '[.trailList[] | {TrailARN, HomeRegion, Name}] | unique_by(.TrailARN)[] | [.TrailARN, .HomeRegion, .Name]' <<<"$j")
 }
 

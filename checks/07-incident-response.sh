@@ -1,5 +1,6 @@
 # Control 7: AWS Security Incident Response membership, proactive triage, and the contacts AWS uses in an incident.
 C7=C7-SIR
+register_component 7 $C7 "7. AWS Security Incident Response"
 TRIAGE_ROLE="AWSServiceRoleForSecurityIncidentResponse_Triage"
 TRIAGE_RULE_OWNER="triage.security-ir.amazonaws.com"
 CONTACT_TYPES="SECURITY OPERATIONS BILLING"

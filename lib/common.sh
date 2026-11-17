@@ -37,7 +37,8 @@ aws_json() {
 # Same as aws_json, but stores the response so other components reuse it instead of calling again.
 cached_json() {
   local control="$1" label="$2" key="$3"; shift 3
-  local file="$OUT_DIR/cache/$label-$key.json" out
+  local file out
+  file=$(cache_file "$label" "$key")
   if [ -f "$file" ]; then cat "$file"; return 0; fi
   out=$(aws_json "$control" "$label" "$@") || return $?
   mkdir -p "$OUT_DIR/cache"
@@ -45,10 +46,14 @@ cached_json() {
   printf '%s' "$out"
 }
 
-# rows <jq filter producing arrays>: reads JSON on stdin, prints one SEP-joined line per array.
+# rows <jq filter producing arrays> [extra jq args]: reads JSON on stdin, prints one SEP-joined line per array.
 rows() {
-  jq -r "($1) | map(tostring) | join(\"\\u001f\")"
+  local filter="$1"; shift
+  jq -r "$@" "($filter) | map(tostring) | join(\"\\u001f\")"
 }
+
+# cache_file <region-label> <cache-key>: path of a response stored by cached_json, for jq --slurpfile.
+cache_file() { echo "$OUT_DIR/cache/$1-$2.json"; }
 
 # pass_or_fail <condition-result true|false> <control> <region> <resource> <pass-detail> <fail-detail> [fail-status]
 pass_or_fail() {
@@ -62,13 +67,27 @@ has_finding() {
     '$1 == c && $2 ~ s && $4 == r && (g == "" || $3 == g) { f = 1 } END { exit !f }' "$OUT_DIR"/findings-*.tsv
 }
 
-# Shared inventory, cached per Region, used by several components.
-ec2_instances() { cached_json "$1" "$2" instances ec2 describe-instances --region "$2"; }
-owned_vpcs()    { cached_json "$1" "$2" vpcs ec2 describe-vpcs --filters "Name=owner-id,Values=$ACCOUNT_ID" --region "$2"; }
-lambda_functions() { cached_json "$1" "$2" functions lambda list-functions --region "$2"; }
-rds_instances() { cached_json "$1" "$2" rds rds describe-db-instances --region "$2"; }
-guardduty_detector_id() { # control region -> detector id or empty
-  local j
-  j=$(cached_json "$1" "$2" gd-detectors guardduty list-detectors --region "$2") || return 1
-  jq -r '.DetectorIds[0] // ""' <<<"$j"
+# jq definition: age_days turns an AWS timestamp into whole days ago. Accepts "Z" or a "+05:30"-style offset,
+# with or without fractional seconds, because services differ.
+JQ_AGE='def age_days: capture("^(?<t>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>.*)$") as $c
+  | ($c.z | if test("^[+-][0-9]{2}:[0-9]{2}$") then (if .[0:1] == "-" then -1 else 1 end) * ((.[1:3] | tonumber) * 3600 + (.[4:6] | tonumber) * 60) else 0 end) as $offset
+  | (now - (($c.t + "Z" | fromdateiso8601) - $offset)) / 86400 | floor;'
+
+# Component registry. Each checks/NN-*.sh file calls register_component once, so scan.sh and the
+# report pick up a new component just by adding its file.
+COMPONENT_LIST=""
+COMPONENT_IDS=()
+COMPONENT_TITLES=()
+register_component() { # <number> <control id> <report title>
+  COMPONENT_LIST="${COMPONENT_LIST:+$COMPONENT_LIST }$1"
+  COMPONENT_IDS[$1]="$2"
+  COMPONENT_TITLES[$1]="$3"
+}
+
+# load_components <script dir>: sources the inventory and every component file.
+load_components() {
+  local f
+  # shellcheck source=lib/inventory.sh
+  source "$1/lib/inventory.sh"
+  for f in "$1"/checks/*.sh; do source "$f"; done
 }

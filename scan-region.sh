@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FINDINGS_FILE="$OUT_DIR/findings-$R.tsv"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
-for f in "$SCRIPT_DIR"/checks/*.sh; do source "$f"; done
+load_components "$SCRIPT_DIR"
 : > "$FINDINGS_FILE"
 
 for n in $COMPONENT_NUMBERS; do

@@ -1,5 +1,6 @@
 # Control 6: IMDSv2 required on every instance and as the account default. Fix with fix-imdsv2.sh.
 C6=C6-IMDS
+register_component 6 $C6 "6. Enforce IMDSv2"
 
 c6_region() {
   local R="$1" j id state tokens name label t

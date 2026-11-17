@@ -1,6 +1,7 @@
 # Control 5: AWS WAF on public applications, web ACL logging, Shield Advanced.
-# Uses the public-endpoint inventory from 02-public-endpoints.sh.
+# Uses the public-endpoint inventory from lib/inventory.sh.
 C5=C5-WAF
+register_component 5 $C5 "5. AWS WAF on public applications"
 CLOUDFRONT_FRONT="front it with CloudFront + WAF"
 
 waf_acl_for() { # region resource-arn -> web ACL name, or empty
