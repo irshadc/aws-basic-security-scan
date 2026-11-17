@@ -1,28 +1,43 @@
 # Basic Security Scan
 
-Read-only scan of an AWS account against 7 baseline security controls. It produces a Markdown report with FAIL, WARN, PASS and ERROR findings per control, and a fix command where one applies. One optional fix script (IMDSv2) is included; it is a dry run unless you set `APPLY=1`.
+Read-only scan of an AWS account against 7 baseline security controls plus a logging and encryption baseline. It produces a Markdown report with FAIL, WARN, PASS and ERROR findings per control, and a fix command where one applies. One optional fix script (IMDSv2) is included; it is a dry run unless you set `APPLY=1`.
+
+Checks that match the [AWS SRA Verify](https://github.com/awslabs/sra-verify) catalog carry its ID, for example `(SRA-IAM-06)`. This tool covers the single-account ("application account") subset of SRA Verify with plain AWS CLI calls, and needs no CloudFormation, CodeBuild or cross-account roles.
 
 ## What It Checks
 
 | # | Control | What the scan looks at |
 |---|---------|------------------------|
-| 1 | Remove long-lived access keys | Root access keys and MFA, IAM user access keys (age, last use), IAM Identity Center |
-| 2 | Review every public endpoint | Security groups open to 0.0.0.0/0 or ::/0, public EC2 IPs, public RDS, internet-facing load balancers, API Gateway, Lambda function URLs, S3 Block Public Access, bucket policies and ACLs, CloudFront |
-| 3 | GuardDuty, Security Hub, Inspector | Enabled status in every Region (Security Hub and Security Hub CSPM; Inspector EC2, ECR, Lambda scanning) |
-| 4 | Block unused Regions | Regions with no EC2, Lambda, RDS or custom VPCs; whether an SCP uses `aws:RequestedRegion` |
-| 5 | AWS WAF on public applications | Web ACLs on CloudFront, ALBs and REST API stages; flags HTTP/WebSocket APIs, Classic LBs and function URLs that need CloudFront + WAF |
+| 1 | Remove long-lived access keys | Root access keys, MFA and signing certificates; IAM users and their access keys (age, last use); password policy (length 14, reuse 24, all character classes); IAM Identity Center; IAM Access Analyzer (external and unused access) |
+| 2 | Review every public endpoint | Security groups open to 0.0.0.0/0 or ::/0, public EC2 IPs, public RDS, internet-facing load balancers, API Gateway, Lambda function URLs, S3 Block Public Access (each setting), bucket policies and ACLs, CloudFront |
+| 3 | GuardDuty, Security Hub, Inspector, Macie | GuardDuty data sources, protection plans and runtime agents; Security Hub and Security Hub CSPM, enabled standards (FSBP, CIS, AI Security Best Practices) and EventBridge routing of findings; Inspector EC2, ECR, Lambda and Lambda code scanning; Macie |
+| 4 | Block unused Regions | Regions with no EC2, Lambda, RDS or custom VPCs; Organizations all-features mode; SCPs that use `aws:RequestedRegion`; resource control policies |
+| 5 | AWS WAF on public applications | Web ACLs on CloudFront, ALBs, REST API stages, Cognito user pools, AppSync and App Runner; web ACL logging; Shield Advanced; flags HTTP/WebSocket APIs, Classic LBs and function URLs that need CloudFront + WAF |
 | 6 | Enforce IMDSv2 | `HttpTokens` on every instance and the account default per Region |
-| 7 | AWS Security Incident Response | Active membership |
+| 7 | AWS Security Incident Response | Membership, proactive triage, triage service-linked role and EventBridge rules; security, operations and billing alternate contacts |
+| 8 | Logging and encryption baseline | CloudTrail (multi-Region, validation, KMS, global events, CloudWatch Logs, logging state, all management events, Bedrock and AgentCore data events); AWS Config recorder, status and AI/ML resource types; VPC flow logs; Route 53 Resolver query logs; EBS encryption by default |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `run-readonly.sh` | Gets read-only credentials, then runs `scan.sh` |
-| `scan.sh` | Account-wide checks, runs `scan-region.sh` per Region, writes the report |
-| `scan-region.sh` | Per-Region checks (called by `scan.sh`) |
-| `lib.sh` | Shared helpers |
+| `scan.sh` | Orchestrator: runs account-wide checks, starts `scan-region.sh` per Region in parallel, then summaries and the report |
+| `scan-region.sh` | Runs every component's Region checks for one Region |
+| `lib/common.sh` | Shared helpers: AWS call wrapper, finding output, cached inventory (instances, VPCs, functions) |
+| `lib/report.sh` | Control titles and the Markdown report |
+| `checks/01-access-keys.sh` ... `checks/08-logging.sh` | One file per control |
 | `fix-imdsv2.sh` | Optional fix for control 6. Dry run by default |
+
+Each file in `checks/` may define three functions, and `scan.sh` calls the ones that exist:
+
+| Function | When it runs |
+|----------|--------------|
+| `cN_global` | Once, for account-wide services (IAM, S3, CloudFront, Organizations, CloudTrail) |
+| `cN_region <region>` | Once per Region, in parallel |
+| `cN_summary` | After all Regions, for cross-Region conclusions (for example "no Identity Center in any Region") |
+
+To add a check, add a function to the matching component and call `emit <control> <FAIL|WARN|PASS|INFO> <region> <resource> <detail>`.
 
 ## Prerequisites
 
@@ -60,11 +75,13 @@ The report path is printed at the end: `reports/<timestamp>/report.md`, plus `fi
 | `REGIONS` | all enabled Regions | Space-separated list, e.g. `"ap-south-1 us-east-1"` |
 | `PARALLEL` | `4` | Regions scanned at once |
 | `DURATION` | `3600` | Credential lifetime in seconds |
+| `COMPONENTS` | `1 2 3 4 5 6 7 8` | Controls to run, by number |
 
-Example, one Region:
+Examples:
 
 ```bash
-BASE_PROFILE=<your-profile> ALLOW_BASE_CREDENTIALS=1 REGIONS="ap-south-1" ./run-readonly.sh
+BASE_PROFILE=<your-profile> ALLOW_BASE_CREDENTIALS=1 REGIONS="ap-south-1" ./run-readonly.sh   # one Region
+BASE_PROFILE=<your-profile> ALLOW_BASE_CREDENTIALS=1 COMPONENTS="5 8" ./run-readonly.sh       # WAF and logging only
 ```
 
 ## Fixing IMDSv2 (Control 6)
